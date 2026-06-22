@@ -22,7 +22,7 @@ eda_verify_ssl: false
 
 # -- RHEL target host --
 target_host: "rhel-target.example.com"
-target_user: "ansible"
+target_user: "ec2-user"
 target_become_password: "{{ lookup('env', 'TARGET_BECOME_PASSWORD') }}"
 
 # -- Quay.io container registry --

@@ -2,15 +2,27 @@
 # deploy-target-host.yml — Prepare the RHEL target host
 #
 # Deploys:
-#   1. Podman socket (enabled and started)
-#   2. Directories for pipeline reports and nftables rules
-#   3. OPA container with admission policy on :8181
-#   4. Sample Flask app container on :8080
+#   1. Podman socket (enabled and started)          --tags podman
+#   2. Directories for pipeline reports and nftables --tags dirs
+#   3. OPA container with admission policy on :8181  --tags opa
+#   4. Sample Flask app container on :8080           --tags app
+#   5. Firewall rules                                --tags firewall
 #
 # Usage:
+#   # Full setup
 #   ansible-playbook setup/deploy-target-host.yml \
 #     -i setup/inventory/deploy-hosts.yml \
 #     -e @setup/vars/deploy-vars.yml
+#
+#   # Just OPA
+#   ansible-playbook setup/deploy-target-host.yml \
+#     -i setup/inventory/deploy-hosts.yml \
+#     -e @setup/vars/deploy-vars.yml --tags opa
+#
+#   # Just the sample app
+#   ansible-playbook setup/deploy-target-host.yml \
+#     -i setup/inventory/deploy-hosts.yml \
+#     -e @setup/vars/deploy-vars.yml --tags app
 
 - name: "Prepare RHEL target host for supply chain demo"
   hosts: target_hosts
@@ -29,18 +41,21 @@
           - podman
           - podman-plugins
         state: present
+      tags: [podman, opa, app]
 
     - name: Enable and start Podman socket
       ansible.builtin.systemd:
         name: podman.socket
         enabled: true
         state: started
+      tags: [podman]
 
     - name: Verify Podman socket is active
       ansible.builtin.command:
         cmd: podman info --format json
       changed_when: false
       register: _podman_info
+      tags: [podman]
 
     # ── Directory structure ──
 
@@ -53,6 +68,7 @@
         - /opt/trusted-pipeline/reports
         - /etc/nftables
         - "{{ opa_policy_dir }}"
+      tags: [dirs]
 
     # ── OPA deployment ──
 
@@ -62,23 +78,27 @@
         dest: "{{ opa_policy_dir }}/image-admission.rego"
         mode: "0644"
       notify: restart_opa
+      tags: [opa]
 
     - name: Check if OPA container exists
       ansible.builtin.command:
         cmd: "podman ps -a --format '{{ '{{' }}.Names{{ '}}' }}' --filter name=opa-admission"
       register: _opa_existing
       changed_when: false
+      tags: [opa]
 
     - name: Remove existing OPA container if present
       ansible.builtin.command:
         cmd: "podman rm -f opa-admission"
       when: "'opa-admission' in _opa_existing.stdout"
       changed_when: true
+      tags: [opa]
 
     - name: Pull OPA container image
       containers.podman.podman_image:
         name: "{{ opa_image }}"
         state: present
+      tags: [opa]
 
     - name: Start OPA container
       ansible.builtin.command:
@@ -94,6 +114,7 @@
           --set decision_logs.console=true
           /policies
       changed_when: true
+      tags: [opa]
 
     - name: Wait for OPA to become healthy
       ansible.builtin.uri:
@@ -104,6 +125,7 @@
       retries: 10
       delay: 3
       until: _opa_health.status == 200
+      tags: [opa]
 
     - name: Verify admission policy is loaded
       ansible.builtin.uri:
@@ -111,10 +133,12 @@
         method: GET
         status_code: 200
       register: _opa_policy_check
+      tags: [opa]
 
     - name: Report OPA status
       ansible.builtin.debug:
         msg: "OPA running on :{{ opa_port }}, admission policy loaded: {{ _opa_policy_check.json.result is defined }}"
+      tags: [opa]
 
     # ── Sample app deployment ──
 
@@ -127,18 +151,21 @@
         - app.py
         - requirements.lock
         - Containerfile
+      tags: [app]
 
     - name: Check if sample app container exists
       ansible.builtin.command:
         cmd: "podman ps -a --format '{{ '{{' }}.Names{{ '}}' }}' --filter name={{ sample_app_container_name }}"
       register: _app_existing
       changed_when: false
+      tags: [app]
 
     - name: Remove existing sample app container if present
       ansible.builtin.command:
         cmd: "podman rm -f {{ sample_app_container_name }}"
       when: "sample_app_container_name in _app_existing.stdout"
       changed_when: true
+      tags: [app]
 
     - name: Build sample app container image
       containers.podman.podman_image:
@@ -148,6 +175,7 @@
         build:
           file: Containerfile
         state: build
+      tags: [app]
 
     - name: Start sample app container
       containers.podman.podman_container:
@@ -157,6 +185,7 @@
         ports:
           - "{{ sample_app_port }}:8080"
         restart_policy: always
+      tags: [app]
 
     - name: Wait for sample app to respond
       ansible.builtin.uri:
@@ -167,6 +196,7 @@
       retries: 10
       delay: 3
       until: _app_health.status == 200
+      tags: [app]
 
     - name: Report deployment summary
       ansible.builtin.debug:
@@ -176,6 +206,7 @@
           - "OPA admission controller: http://{{ ansible_host }}:{{ opa_port }}"
           - "Sample app: http://{{ ansible_host }}:{{ sample_app_port }}"
           - "Pipeline reports: /opt/trusted-pipeline/reports/"
+      tags: [always]
 
     # ── Firewall (allow OPA and app ports) ──
 
@@ -189,6 +220,7 @@
         - "{{ opa_port }}"
         - "{{ sample_app_port }}"
       failed_when: false
+      tags: [firewall]
 
   handlers:
     - name: restart_opa

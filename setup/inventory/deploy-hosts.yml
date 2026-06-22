@@ -5,5 +5,5 @@ all:
       hosts:
         rhel-target:
           ansible_host: "{{ target_host | default('rhel-target.example.com') }}"
-          ansible_user: "{{ target_user | default('ansible') }}"
+          ansible_user: "{{ target_user | default('ec2-user') }}"
           ansible_become: true

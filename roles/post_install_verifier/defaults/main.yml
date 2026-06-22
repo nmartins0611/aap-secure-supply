@@ -1,0 +1,22 @@
+---
+verifier_lockfile_path: "{{ playbook_dir }}/../sample-app/requirements.lock"
+verifier_venv_path: "/build/venv"
+verifier_container_name: "{{ monitor_container_name | default('install-monitor-latest') }}"
+
+# Paths where files are expected after pip install
+verifier_allowed_paths:
+  - /build/venv/lib
+  - /build/venv/bin
+  - /build/venv/include
+  - /build/venv/pyvenv.cfg
+  - /tmp/pip-
+
+# Suspicious file patterns that should never appear after a pip install
+verifier_suspicious_patterns:
+  - "/tmp/*.sh"
+  - "/tmp/*.bin"
+  - "/var/spool/cron"
+  - "/etc/cron.*"
+  - "/etc/systemd/system/*.service"
+  - "/usr/lib/systemd/system/*.service"
+  - "*.so" # outside site-packages

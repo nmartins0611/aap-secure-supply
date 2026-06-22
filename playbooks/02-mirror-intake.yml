@@ -1,0 +1,10 @@
+---
+- name: "Step 2: Scan and approve package for internal mirror"
+  hosts: build_hosts
+  gather_facts: true
+
+  roles:
+    - role: mirror_gatekeeper
+      vars:
+        package_name: "{{ mirror_package_name }}"
+        package_version: "{{ mirror_package_version }}"

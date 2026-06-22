@@ -1,0 +1,42 @@
+---
+- name: "Pipeline failure notification"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Send Slack failure notification
+      ansible.builtin.uri:
+        url: "{{ slack_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: |
+            :x: *Trusted Build Pipeline FAILED*
+            Build ID: `{{ build_id | default('unknown') }}`
+            Failed step: `{{ failed_step | default('unknown') }}`
+            Error: {{ failure_message | default('See AAP job output for details') }}
+            Timestamp: {{ ansible_date_time.iso8601 }}
+      when: slack_webhook_url | default('') | length > 0
+      failed_when: false
+
+    - name: Log failure to Splunk
+      ansible.builtin.uri:
+        url: "{{ splunk_hec_url }}"
+        method: POST
+        headers:
+          Authorization: "Splunk {{ splunk_hec_token }}"
+        body_format: json
+        body:
+          event:
+            pipeline: "trusted-build-pipeline"
+            action: "pipeline_failure"
+            build_id: "{{ build_id | default('unknown') }}"
+            failed_step: "{{ failed_step | default('unknown') }}"
+            error: "{{ failure_message | default('unknown') }}"
+            timestamp: "{{ ansible_date_time.iso8601 }}"
+        status_code: [200, 201]
+      when:
+        - splunk_hec_url | default('') | length > 0
+        - splunk_hec_token | default('') | length > 0
+      failed_when: false

@@ -1,0 +1,9 @@
+---
+- name: "Step 1: Validate lockfile integrity and approved packages"
+  hosts: build_hosts
+  gather_facts: true
+
+  roles:
+    - role: lockfile_validator
+      vars:
+        lockfile_path: "{{ lockfile_path_override | default(lockfile_path) }}"

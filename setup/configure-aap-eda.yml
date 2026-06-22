@@ -1,0 +1,221 @@
+---
+# configure-aap-eda.yml — Configure EDA Controller
+#
+# Creates:
+#   1. EDA project pointing at the same Git repo
+#   2. Rulebook activation: upstream package monitor
+#   3. Rulebook activation: advisory rebuild trigger
+#
+# The ansible.eda collection modules are used where available.
+# Falls back to ansible.builtin.uri against the EDA API otherwise.
+#
+# Usage:
+#   ansible-playbook setup/configure-aap-eda.yml \
+#     -e @setup/vars/deploy-vars.yml
+
+- name: "Configure EDA Controller — Project and Rulebook Activations"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars/deploy-vars.yml
+
+  vars:
+    eda_project_name: "Trusted Build Pipeline — EDA"
+    eda_api_base: "{{ eda_controller_url }}/api/eda/v1"
+    eda_auth:
+      user: "{{ eda_admin_user }}"
+      password: "{{ eda_admin_password }}"
+
+    rulebook_activations:
+      - name: "Upstream Package Monitor"
+        rulebook: "rulebooks/upstream-package-monitor.yml"
+        description: "Watches PyPI/NPM for new releases of pinned dependencies and triggers lockfile refresh"
+
+      - name: "Advisory Rebuild Trigger"
+        rulebook: "rulebooks/advisory-rebuild-trigger.yml"
+        description: "Listens for RHSA/CVE advisories and triggers a golden image rebuild"
+
+  tasks:
+    - name: Verify EDA Controller is reachable
+      ansible.builtin.uri:
+        url: "{{ eda_controller_url }}/api/eda/v1/"
+        method: GET
+        url_username: "{{ eda_admin_user }}"
+        url_password: "{{ eda_admin_password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: [200, 301]
+      register: _eda_ping
+      tags: [always]
+
+    # ── EDA Project ──
+
+    - name: Check if EDA project exists
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/projects/?name={{ eda_project_name | urlencode }}"
+        method: GET
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _eda_project_check
+      tags: [project]
+
+    - name: Create EDA project
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/projects/"
+        method: POST
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ eda_project_name }}"
+          description: "EDA rulebooks for the trusted build pipeline"
+          url: "{{ project_scm_url }}"
+          scm_branch: "{{ project_scm_branch }}"
+        status_code: [200, 201]
+      register: _eda_project_created
+      when: _eda_project_check.json.count == 0
+      tags: [project]
+
+    - name: Get EDA project ID
+      ansible.builtin.set_fact:
+        eda_project_id: >-
+          {{
+            _eda_project_created.json.id
+            if (_eda_project_check.json.count == 0)
+            else _eda_project_check.json.results[0].id
+          }}
+      tags: [project]
+
+    - name: Sync EDA project
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/projects/{{ eda_project_id }}/sync/"
+        method: POST
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: [200, 202, 204]
+      tags: [project]
+
+    - name: Wait for EDA project sync to complete
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/projects/{{ eda_project_id }}/"
+        method: GET
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _eda_project_status
+      retries: 20
+      delay: 5
+      until: _eda_project_status.json.import_state | default('') in ['completed', 'failed']
+      tags: [project]
+
+    - name: Verify EDA project sync succeeded
+      ansible.builtin.assert:
+        that:
+          - _eda_project_status.json.import_state == 'completed'
+        fail_msg: >-
+          EDA project sync failed: {{ _eda_project_status.json.import_error | default('unknown error') }}
+      tags: [project]
+
+    # ── Decision Environment ──
+
+    - name: Check if decision environment exists
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/decision-environments/?name=Trusted+Pipeline+DE"
+        method: GET
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _eda_de_check
+      tags: [de]
+
+    - name: Create decision environment
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/decision-environments/"
+        method: POST
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "Trusted Pipeline DE"
+          description: "Decision environment for trusted pipeline EDA rulebooks"
+          image_url: "{{ ee_image }}"
+        status_code: [200, 201]
+      register: _eda_de_created
+      when: _eda_de_check.json.count == 0
+      tags: [de]
+
+    - name: Get decision environment ID
+      ansible.builtin.set_fact:
+        eda_de_id: >-
+          {{
+            _eda_de_created.json.id
+            if (_eda_de_check.json.count == 0)
+            else _eda_de_check.json.results[0].id
+          }}
+      tags: [de]
+
+    # ── Rulebook activations ──
+
+    - name: Check existing rulebook activations
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/activations/?name={{ item.name | urlencode }}"
+        method: GET
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _eda_act_check
+      loop: "{{ rulebook_activations }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [activations]
+
+    - name: Create rulebook activations
+      ansible.builtin.uri:
+        url: "{{ eda_api_base }}/activations/"
+        method: POST
+        url_username: "{{ eda_auth.user }}"
+        url_password: "{{ eda_auth.password }}"
+        validate_certs: "{{ eda_verify_ssl }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          project_id: "{{ eda_project_id }}"
+          rulebook: "{{ item.item.rulebook }}"
+          decision_environment_id: "{{ eda_de_id }}"
+          is_enabled: true
+          restart_policy: "on-failure"
+        status_code: [200, 201]
+      loop: "{{ _eda_act_check.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count == 0
+      tags: [activations]
+
+    # ── Summary ──
+
+    - name: Display EDA configuration summary
+      ansible.builtin.debug:
+        msg:
+          - "EDA Project: {{ eda_project_name }} (id={{ eda_project_id }})"
+          - "Decision Environment: Trusted Pipeline DE (id={{ eda_de_id }})"
+          - "Activations: {{ rulebook_activations | map(attribute='name') | list | join(', ') }}"
+      tags: [always]

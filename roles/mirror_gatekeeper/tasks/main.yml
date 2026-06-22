@@ -1,0 +1,104 @@
+---
+- name: Validate required parameters
+  ansible.builtin.assert:
+    that:
+      - package_name | length > 0
+      - package_version | length > 0
+    fail_msg: "package_name and package_version are required"
+
+- name: Create staging directory
+  ansible.builtin.file:
+    path: "{{ staging_dir }}/{{ package_name }}-{{ package_version }}"
+    state: directory
+    mode: "0750"
+
+- name: Query upstream PyPI for package metadata
+  ansible.builtin.uri:
+    url: "{{ upstream_pypi_url }}/{{ package_name }}/{{ package_version }}/json"
+    method: GET
+    return_content: true
+  register: _pypi_metadata
+  failed_when: _pypi_metadata.status != 200
+
+- name: Download source distribution
+  ansible.builtin.get_url:
+    url: "{{ (_pypi_metadata.json.urls | selectattr('packagetype', 'equalto', 'sdist') | first).url }}"
+    dest: "{{ staging_dir }}/{{ package_name }}-{{ package_version }}/{{ package_name }}-{{ package_version }}.tar.gz"
+    checksum: "sha256:{{ (_pypi_metadata.json.urls | selectattr('packagetype', 'equalto', 'sdist') | first).digests.sha256 }}"
+    mode: "0640"
+  register: _download
+
+- name: Run pip-audit against the package
+  ansible.builtin.command:
+    cmd: >-
+      pip-audit
+      --require-hashes
+      --desc
+      --format json
+      --strict
+      {{ package_name }}=={{ package_version }}
+  register: _audit_result
+  failed_when: false
+  changed_when: false
+
+- name: Parse pip-audit findings
+  ansible.builtin.set_fact:
+    _audit_findings: "{{ (_audit_result.stdout | default('{}') | from_json).dependencies | default([]) | selectattr('vulns', 'defined') | list }}"
+
+- name: Fail on known vulnerabilities
+  ansible.builtin.fail:
+    msg: >-
+      PACKAGE REJECTED -- {{ package_name }}=={{ package_version }} has known
+      vulnerabilities: {{ _audit_findings | map(attribute='vulns') | flatten | map(attribute='id') | join(', ') }}
+  when: _audit_findings | length > 0
+
+- name: Extract source for static analysis
+  ansible.builtin.command:
+    cmd: "tar xzf {{ package_name }}-{{ package_version }}.tar.gz"
+    chdir: "{{ staging_dir }}/{{ package_name }}-{{ package_version }}"
+  changed_when: true
+
+- name: Scan setup.py for suspicious patterns
+  ansible.builtin.command:
+    cmd: >-
+      grep -rEn '{{ suspicious_patterns | join('|') }}'
+      {{ staging_dir }}/{{ package_name }}-{{ package_version }}/
+      --include='setup.py' --include='setup.cfg' --include='*.pth'
+  register: _suspicious_matches
+  failed_when: false
+  changed_when: false
+
+- name: Fail on suspicious install-time code
+  ansible.builtin.fail:
+    msg: >-
+      PACKAGE REJECTED -- {{ package_name }}=={{ package_version }} contains
+      suspicious install-time code patterns:
+      {{ _suspicious_matches.stdout_lines | join('; ') }}
+  when: _suspicious_matches.stdout_lines | default([]) | length > 0
+
+- name: Publish approved package to internal mirror
+  ansible.builtin.command:
+    cmd: >-
+      twine upload
+      --repository-url {{ internal_mirror_upload_url }}
+      {{ staging_dir }}/{{ package_name }}-{{ package_version }}/{{ package_name }}-{{ package_version }}.tar.gz
+  changed_when: true
+
+- name: Clean up staging directory
+  ansible.builtin.file:
+    path: "{{ staging_dir }}/{{ package_name }}-{{ package_version }}"
+    state: absent
+
+- name: Package approved and published
+  ansible.builtin.debug:
+    msg: >-
+      Package {{ package_name }}=={{ package_version }} APPROVED:
+      no known CVEs, no suspicious install-time code.
+      Published to internal mirror at {{ internal_mirror_upload_url }}.
+
+- name: Export approval result
+  ansible.builtin.set_stats:
+    data:
+      mirror_package_approved: true
+      mirror_package_name: "{{ package_name }}"
+      mirror_package_version: "{{ package_version }}"

@@ -1,0 +1,9 @@
+---
+- name: "Step 3a: Apply build network isolation"
+  hosts: build_hosts
+  gather_facts: true
+
+  roles:
+    - role: build_network_isolation
+      vars:
+        network_isolation_action: "apply"

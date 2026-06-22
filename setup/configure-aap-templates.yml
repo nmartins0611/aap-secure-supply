@@ -1,0 +1,331 @@
+---
+# configure-aap-templates.yml — Create job templates and workflow
+#
+# Creates:
+#   1. Nine individual job templates (Steps 1-7 + network revert + failure report)
+#   2. Workflow template wiring the pipeline steps with success/failure paths
+#
+# Usage:
+#   ansible-playbook setup/configure-aap-templates.yml \
+#     -e @setup/vars/deploy-vars.yml
+
+- name: "Configure AAP 2.6 — Job Templates and Workflow"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars/deploy-vars.yml
+
+  vars:
+    job_templates:
+      - name: "Step 1 — Validate Lockfile"
+        description: "Verify hash-pinned lockfile, detect typosquatting and unapproved packages"
+        playbook: "playbooks/01-validate-lockfile.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 2 — Mirror Intake"
+        description: "Download packages from private mirror, verify hashes match lockfile"
+        playbook: "playbooks/02-mirror-intake.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 3a — Apply Network Isolation"
+        description: "Apply nftables rules to block outbound network during pip install"
+        playbook: "playbooks/03-apply-network-isolation.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 3b — Revert Network Isolation"
+        description: "Remove nftables build isolation rules (cleanup)"
+        playbook: "playbooks/03-revert-network-isolation.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 4 — Behavioral Monitor"
+        description: "Install packages under auditd surveillance, detect post-install attacks"
+        playbook: "playbooks/04-behavioral-monitor.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 5 — Post-Install Verify"
+        description: "Scan installed packages for unexpected files, scripts, binaries"
+        playbook: "playbooks/05-post-install-verify.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 6 — Golden Image Build"
+        description: "Build container image, SBOM, CVE scan, sign with cosign, push to registry"
+        playbook: "playbooks/06-golden-image-build.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Step 7 — Admission Control"
+        description: "Verify image signature, SBOM attestation, and CVE threshold via OPA"
+        playbook: "playbooks/07-admission-control.yml"
+        job_tags: ""
+        extra_vars: {}
+
+      - name: "Failure Report"
+        description: "Generate and deliver pipeline failure report (Slack, email)"
+        playbook: "playbooks/helpers/failure-report.yml"
+        job_tags: ""
+        extra_vars: {}
+
+  module_defaults:
+    group/ansible.controller.controller:
+      controller_host: "{{ aap_controller_url }}"
+      controller_username: "{{ aap_admin_user }}"
+      controller_password: "{{ aap_admin_password }}"
+      validate_certs: "{{ aap_verify_ssl }}"
+
+  tasks:
+    # ── Job templates ──
+
+    - name: Create job templates
+      ansible.controller.job_template:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        organization: "{{ aap_organization }}"
+        project: "{{ aap_project_name }}"
+        inventory: "{{ aap_inventory_name }}"
+        playbook: "{{ item.playbook }}"
+        execution_environment: "{{ aap_ee_name }}"
+        job_tags: "{{ item.job_tags | default(omit) }}"
+        extra_vars: "{{ item.extra_vars | default(omit) }}"
+        credential: "Trusted Pipeline Machine"
+        state: present
+      loop: "{{ job_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [templates]
+
+    - name: Attach Quay.io registry credential to Step 6
+      ansible.controller.job_template:
+        name: "Step 6 — Golden Image Build"
+        organization: "{{ aap_organization }}"
+        credentials:
+          - "Trusted Pipeline Machine"
+          - "Quay.io Registry"
+        state: present
+      tags: [templates]
+
+    # ── Workflow template ──
+
+    - name: Create pipeline workflow template
+      ansible.controller.workflow_job_template:
+        name: "Trusted Build Pipeline"
+        description: "Full supply chain pipeline — validate, isolate, monitor, verify, build, sign, admit"
+        organization: "{{ aap_organization }}"
+        inventory: "{{ aap_inventory_name }}"
+        state: present
+      tags: [workflow]
+
+    # ── Workflow nodes ──
+    #
+    # Flow:
+    #   Step 1 ──success──▶ Step 3a ──success──▶ Step 4 ──success──▶ Step 5
+    #     │                   │                                         │
+    #     │failure            │failure                               success
+    #     ▼                   ▼                                         ▼
+    #   Failure Report    Step 3b (revert)                           Step 3b (revert)
+    #                                                                   │
+    #                                                                success
+    #                                                                   ▼
+    #                                                                Step 6
+    #                                                                   │
+    #                                                                success
+    #                                                                   ▼
+    #                                                                Step 7
+
+    - name: "Workflow node: Step 1 — Validate Lockfile (root)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_1"
+        unified_job_template: "Step 1 — Validate Lockfile"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Failure Report (from Step 1)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "failure_report_from_step1"
+        unified_job_template: "Failure Report"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 1 failure → Failure Report"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_1"
+        organization: "{{ aap_organization }}"
+        failure_nodes:
+          - identifier: "failure_report_from_step1"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 3a — Apply Network Isolation"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3a"
+        unified_job_template: "Step 3a — Apply Network Isolation"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 1 success → Step 3a"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_1"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_3a"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 3b revert (from Step 3a failure)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3b_revert_from_3a"
+        unified_job_template: "Step 3b — Revert Network Isolation"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 3a failure → Step 3b revert"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3a"
+        organization: "{{ aap_organization }}"
+        failure_nodes:
+          - identifier: "step_3b_revert_from_3a"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 4 — Behavioral Monitor"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_4"
+        unified_job_template: "Step 4 — Behavioral Monitor"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 3a success → Step 4"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3a"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_4"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 5 — Post-Install Verify"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_5"
+        unified_job_template: "Step 5 — Post-Install Verify"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 4 success → Step 5"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_4"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_5"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 3b revert (cleanup after Step 5)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3b_revert_cleanup"
+        unified_job_template: "Step 3b — Revert Network Isolation"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 5 success → Step 3b revert (cleanup)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_5"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_3b_revert_cleanup"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 6 — Golden Image Build"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_6"
+        unified_job_template: "Step 6 — Golden Image Build"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 3b revert cleanup → Step 6"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_3b_revert_cleanup"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_6"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Step 7 — Admission Control"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_7"
+        unified_job_template: "Step 7 — Admission Control"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 6 success → Step 7"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_6"
+        organization: "{{ aap_organization }}"
+        success_nodes:
+          - identifier: "step_7"
+        state: present
+      tags: [workflow]
+
+    - name: "Workflow node: Failure Report (from Step 6)"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "failure_report_from_step6"
+        unified_job_template: "Failure Report"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [workflow]
+
+    - name: "Link Step 6 failure → Failure Report"
+      ansible.controller.workflow_job_template_node:
+        workflow_job_template: "Trusted Build Pipeline"
+        identifier: "step_6"
+        organization: "{{ aap_organization }}"
+        failure_nodes:
+          - identifier: "failure_report_from_step6"
+        state: present
+      tags: [workflow]
+
+    # ── Summary ──
+
+    - name: Display workflow summary
+      ansible.builtin.debug:
+        msg:
+          - "Created {{ job_templates | length }} job templates"
+          - "Workflow: Trusted Build Pipeline"
+          - "Flow: Step 1 → 3a → 4 → 5 → 3b(revert) → 6 → 7"
+          - "Failure paths: Step 1→FailReport, Step 3a→3b(revert), Step 6→FailReport"
+      tags: [always]

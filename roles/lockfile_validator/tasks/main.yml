@@ -1,0 +1,94 @@
+---
+- name: Read the lockfile
+  ansible.builtin.slurp:
+    src: "{{ lockfile_path }}"
+  register: _lockfile_raw
+
+- name: Load approved packages policy
+  ansible.builtin.include_vars:
+    file: "{{ approved_packages_file }}"
+    name: _policy
+
+- name: Parse lockfile into package list
+  ansible.builtin.set_fact:
+    _lockfile_packages: >-
+      {{ (_lockfile_raw.content | b64decode).split('\n')
+         | select('match', '^[a-zA-Z0-9]')
+         | map('regex_replace', '==.*$', '')
+         | map('lower')
+         | list }}
+
+- name: Parse lockfile entries with versions
+  ansible.builtin.set_fact:
+    _lockfile_entries: >-
+      {{ (_lockfile_raw.content | b64decode).split('\n')
+         | select('match', '^[a-zA-Z0-9]')
+         | map('regex_replace', ' \\\\$', '')
+         | list }}
+
+- name: Build list of approved package names
+  ansible.builtin.set_fact:
+    _approved_names: >-
+      {{ _policy.approved_packages | map(attribute='name') | map('lower') | list }}
+
+- name: Build list of blocked package names
+  ansible.builtin.set_fact:
+    _blocked_names: >-
+      {{ _policy.blocked_packages | default([]) | map(attribute='name') | map('lower') | list }}
+
+- name: Check for blocked packages (typosquatting)
+  ansible.builtin.set_fact:
+    _blocked_found: >-
+      {{ _lockfile_packages | intersect(_blocked_names) }}
+
+- name: Fail on blocked packages
+  ansible.builtin.fail:
+    msg: >-
+      BLOCKED PACKAGES DETECTED -- suspected typosquatting or known-malicious packages
+      found in lockfile: {{ _blocked_found | join(', ') }}.
+      Blocked reasons: {{ _policy.blocked_packages
+        | selectattr('name', 'in', _blocked_found)
+        | map(attribute='reason') | list | join('; ') }}
+  when: _blocked_found | length > 0
+
+- name: Check for unapproved packages
+  ansible.builtin.set_fact:
+    _unapproved: >-
+      {{ _lockfile_packages | difference(_approved_names) }}
+
+- name: Fail on unapproved packages
+  ansible.builtin.fail:
+    msg: >-
+      UNAPPROVED PACKAGES DETECTED in lockfile: {{ _unapproved | join(', ') }}.
+      Every dependency must be listed in {{ approved_packages_file }}.
+      Submit a package approval request before adding new dependencies.
+  when: _unapproved | length > 0
+
+- name: Verify lockfile contains hash entries
+  ansible.builtin.set_fact:
+    _entries_without_hashes: >-
+      {{ (_lockfile_raw.content | b64decode).split('\n')
+         | select('match', '^[a-zA-Z0-9].*==')
+         | reject('match', '.*\\\\$')
+         | list }}
+
+- name: Verify all packages have hashes
+  ansible.builtin.fail:
+    msg: >-
+      LOCKFILE INTEGRITY FAILURE -- the following packages have no hash pins:
+      {{ _entries_without_hashes | join(', ') }}.
+      Regenerate the lockfile with: pip-compile --generate-hashes
+  when: _entries_without_hashes | length > 0
+
+- name: Lockfile validation passed
+  ansible.builtin.debug:
+    msg: >-
+      Lockfile validation PASSED: {{ _lockfile_packages | length }} packages,
+      all on approved list, no blocked packages, all hash-pinned.
+
+- name: Export lockfile validation results
+  ansible.builtin.set_stats:
+    data:
+      lockfile_valid: true
+      lockfile_package_count: "{{ _lockfile_packages | length }}"
+      lockfile_packages: "{{ _lockfile_packages }}"

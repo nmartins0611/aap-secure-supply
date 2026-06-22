@@ -1,0 +1,23 @@
+*.retry
+*.pyc
+__pycache__/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.log
+context/
+/execution-environment/context/
+*.tar.gz
+*.whl
+.env
+credentials.yml
+vault.yml
+
+# Project-internal docs (not shipped with the repo)
+ansible.cfg
+BOM.md
+CLAUDE.md
+DEMO.md

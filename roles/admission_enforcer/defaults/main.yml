@@ -1,0 +1,9 @@
+---
+admission_image_ref: ""
+admission_opa_url: "https://opa.internal.example.com/v1/data/container/admission"
+admission_approved_registries:
+  - "quay.io"
+  - "registry.redhat.io"
+admission_golden_base_repo: "quay.io/aap-supply-chain/golden-ubi9-hardened"
+admission_splunk_hec_url: ""
+admission_splunk_hec_token: ""

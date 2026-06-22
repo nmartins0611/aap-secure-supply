@@ -1,0 +1,5 @@
+---
+lockfile_path: "{{ playbook_dir }}/../sample-app/requirements.lock"
+policies_dir: "{{ playbook_dir }}/../policies"
+approved_packages_file: "{{ policies_dir }}/approved-packages.yml"
+internal_mirror_url: "https://pypi.internal.example.com/simple/"

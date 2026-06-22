@@ -1,0 +1,7 @@
+---
+network_isolation_action: "apply"
+network_allowlist_file: "{{ playbook_dir }}/../policies/network-allowlist.yml"
+nftables_table_name: "build_isolation"
+nftables_log_prefix: "BUILD-ISO-DROP"
+nftables_log_level: "warn"
+nftables_state_backup: "/tmp/nftables-pre-isolation.backup"

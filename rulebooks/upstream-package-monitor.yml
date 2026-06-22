@@ -1,0 +1,35 @@
+---
+- name: Monitor upstream PyPI for new package versions
+  hosts: all
+  sources:
+    - ansible.eda.url_check:
+        urls:
+          - "https://pypi.org/rss/updates.xml"
+        delay: 300
+
+  rules:
+    - name: Trigger mirror intake on tracked package update
+      condition: >-
+        event.body is search("flask|requests|gunicorn|werkzeug|jinja2|click|urllib3|certifi",
+        ignorecase=true)
+      actions:
+        - run_job_template:
+            name: "Trusted Pipeline - Mirror Intake"
+            organization: "Default"
+            job_args:
+              extra_vars:
+                mirror_package_name: "{{ event.body | regex_search('[a-zA-Z0-9_-]+') }}"
+                mirror_package_version: "latest"
+
+    - name: Alert on potential typosquatting match
+      condition: >-
+        event.body is search("reqeusts|flassk|jinja3|python-requests",
+        ignorecase=true)
+      actions:
+        - run_job_template:
+            name: "Trusted Pipeline - Failure Report"
+            organization: "Default"
+            job_args:
+              extra_vars:
+                failed_step: "EDA: Typosquatting Detection"
+                failure_message: "Potential typosquatting package detected on PyPI: {{ event.body }}"

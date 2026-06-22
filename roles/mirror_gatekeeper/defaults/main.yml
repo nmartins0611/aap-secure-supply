@@ -1,0 +1,17 @@
+---
+package_name: ""
+package_version: ""
+upstream_pypi_url: "https://pypi.org/pypi"
+internal_mirror_upload_url: "https://pypi.internal.example.com/upload/"
+staging_dir: "/tmp/mirror-staging"
+suspicious_patterns:
+  - "os\\.system"
+  - "subprocess\\.call"
+  - "subprocess\\.run"
+  - "subprocess\\.Popen"
+  - "socket\\.connect"
+  - "urllib\\.request\\.urlopen"
+  - "http\\.client\\.HTTPConnection"
+  - "__import__\\(['\"]os['\"]\\)"
+  - "eval\\("
+  - "exec\\("

@@ -1,0 +1,24 @@
+---
+monitor_container_name: "install-monitor-{{ ansible_date_time.iso8601_basic_short }}"
+monitor_base_image: "registry.redhat.io/ubi9/ubi-minimal:9.4"
+monitor_lockfile_path: "{{ playbook_dir }}/../sample-app/requirements.lock"
+monitor_pip_index_url: "https://pypi.internal.example.com/simple/"
+monitor_build_dir: "/build"
+monitor_venv_dir: "/build/venv"
+monitor_audit_log: "/var/log/audit/audit.log"
+monitor_audit_rules_dest: "/etc/audit/rules.d/build-monitor.rules"
+
+# Paths to monitor for secret access attempts
+monitor_secret_paths:
+  - /etc/shadow
+  - /etc/gshadow
+  - /root/.ssh
+  - /root/.aws
+  - /root/.config/gcloud
+  - /home
+
+# Allowed write paths during pip install
+monitor_allowed_write_paths:
+  - /build/venv
+  - /tmp/pip-
+  - /root/.cache/pip

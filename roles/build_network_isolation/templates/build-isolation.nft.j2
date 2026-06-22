@@ -1,0 +1,45 @@
+#!/usr/sbin/nft -f
+#
+# Build-time network isolation ruleset.
+# Applied by AAP before the build starts, reverted after.
+# Uses a dedicated table so existing firewall rules are untouched.
+#
+# Managed by: aap-full-trusted-pipeline / build_network_isolation role
+# DO NOT EDIT MANUALLY -- this file is overwritten on every build.
+
+table inet {{ table_name }} {
+
+    chain output {
+        type filter hook output priority 0; policy drop;
+
+        # Allow loopback
+        oifname "lo" accept
+
+        # Allow established and related connections
+        ct state established,related accept
+
+{% for host in allowed_hosts %}
+{% if host.protocol == 'tcp' %}
+        # {{ host.description }}
+        {% if host.ip | regex_search('^\d') %}
+        ip daddr {{ host.ip }} tcp dport {{ host.port }} accept
+        {% endif %}
+{% elif host.protocol == 'udp' %}
+        # {{ host.description }}
+        {% if host.ip | regex_search('^\d') %}
+        ip daddr {{ host.ip }} udp dport {{ host.port }} accept
+        {% endif %}
+{% endif %}
+{% endfor %}
+
+        # Log and drop everything else
+        log prefix "{{ log_prefix }}: " level {{ nftables_log_level | default('warn') }}
+        counter drop
+    }
+
+    chain input {
+        type filter hook input priority 0; policy accept;
+
+        # Input is permissive -- we only restrict outbound during build
+    }
+}

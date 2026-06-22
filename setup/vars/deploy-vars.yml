@@ -1,0 +1,57 @@
+---
+# ═══════════════════════════════════════════════════════════════
+# Trusted Build Pipeline — Deployment Variables
+#
+# Edit this file before running setup/deploy-all.yml.
+# Secrets can be set via environment variables instead of
+# hardcoding them here.
+# ═══════════════════════════════════════════════════════════════
+
+# -- AAP 2.6 Controller --
+aap_controller_url: "https://aap-controller.example.com"
+aap_admin_user: "admin"
+aap_admin_password: "{{ lookup('env', 'AAP_ADMIN_PASSWORD') }}"
+aap_verify_ssl: false
+aap_organization: "Default"
+
+# -- EDA Controller --
+eda_controller_url: "https://eda-controller.example.com"
+eda_admin_user: "admin"
+eda_admin_password: "{{ lookup('env', 'EDA_ADMIN_PASSWORD') | default(aap_admin_password, true) }}"
+eda_verify_ssl: false
+
+# -- RHEL target host --
+target_host: "rhel-target.example.com"
+target_user: "ansible"
+target_become_password: "{{ lookup('env', 'TARGET_BECOME_PASSWORD') }}"
+
+# -- Quay.io container registry --
+quay_namespace: "aap-supply-chain"
+quay_registry_url: "quay.io"
+quay_robot_account: ""
+quay_robot_token: "{{ lookup('env', 'QUAY_ROBOT_TOKEN') }}"
+ee_image: "{{ quay_registry_url }}/{{ quay_namespace }}/trusted-pipeline-ee:latest"
+
+# -- Git repository (this repo) --
+project_scm_url: ""
+project_scm_branch: "main"
+project_scm_credential_name: "Trusted Pipeline SCM"
+scm_username: ""
+scm_password: "{{ lookup('env', 'SCM_TOKEN') }}"
+
+# -- OPA --
+opa_image: "docker.io/openpolicyagent/opa:latest"
+opa_port: 8181
+opa_policy_dir: "/opt/opa/policies"
+
+# -- Sample app --
+sample_app_port: 8080
+sample_app_container_name: "trusted-pipeline-demo-app"
+
+# -- Slack (optional) --
+slack_webhook_url: "{{ lookup('env', 'SLACK_WEBHOOK_URL') | default('', true) }}"
+
+# -- Pipeline project name in AAP --
+aap_project_name: "Trusted Build Pipeline"
+aap_ee_name: "Trusted Pipeline EE"
+aap_inventory_name: "Trusted Pipeline Inventory"

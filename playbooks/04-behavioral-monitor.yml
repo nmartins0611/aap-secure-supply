@@ -1,0 +1,7 @@
+---
+- name: "Step 4: Monitor install behavior in disposable container"
+  hosts: build_hosts
+  gather_facts: true
+
+  roles:
+    - role: install_monitor

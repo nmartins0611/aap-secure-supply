@@ -1,0 +1,41 @@
+---
+# -- Internal package mirror (Nexus, Artifactory, devpi) --
+internal_mirror_url: "https://pypi.internal.example.com/simple/"
+internal_mirror_api: "https://pypi.internal.example.com/api/v1"
+internal_mirror_upload_url: "https://pypi.internal.example.com/upload/"
+
+# -- Container registry --
+registry: "quay.io"
+image_name: "{{ registry }}/{{ registry_namespace }}/apps"
+golden_image_name: "{{ registry }}/{{ registry_namespace }}/golden-ubi9-hardened"
+registry_namespace: "aap-supply-chain"
+
+# -- Build identification --
+build_id: "{{ ansible_date_time.iso8601_basic_short }}"
+candidate_tag: "candidate-{{ build_id }}"
+production_tag: "v{{ ansible_date_time.year }}.{{ ansible_date_time.month }}"
+
+# -- Paths --
+build_context: "{{ playbook_dir }}/../sample-app/"
+policies_dir: "{{ playbook_dir }}/../policies"
+reports_dir: "/opt/trusted-pipeline/reports"
+lockfile_path: "{{ build_context }}/requirements.lock"
+
+# -- Network isolation --
+dns_server: "10.0.0.2"
+
+# -- Behavioral monitoring --
+monitor_container_name: "install-monitor-{{ build_id }}"
+monitor_base_image: "registry.redhat.io/ubi9/ubi-minimal:9.4"
+
+# -- OPA endpoint --
+opa_url: "https://opa.internal.example.com/v1/data/container/admission"
+
+# -- Notification --
+slack_webhook_url: "{{ lookup('env', 'SLACK_WEBHOOK_URL') }}"
+splunk_hec_url: "https://splunk.internal.example.com:8088/services/collector/event"
+splunk_hec_token: "{{ lookup('env', 'SPLUNK_HEC_TOKEN') }}"
+
+# -- AAP Controller (for EDA triggers) --
+controller_url: "https://aap-controller.internal.example.com"
+controller_workflow_id: "trusted-build-pipeline"

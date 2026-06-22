@@ -1,0 +1,81 @@
+---
+# Approved package allowlist for the trusted build pipeline.
+# Every dependency in requirements.lock must appear here or the build fails.
+# Maintained by the security team; changes require review and merge approval.
+
+approved_registries:
+  - https://pypi.org/simple/
+  - https://pypi.internal.example.com/simple/
+
+approved_packages:
+  - name: flask
+    version: ">=3.0.0,<4.0.0"
+    source: pypi.org
+
+  - name: werkzeug
+    version: ">=3.0.0,<4.0.0"
+    source: pypi.org
+
+  - name: jinja2
+    version: ">=3.1.0,<4.0.0"
+    source: pypi.org
+
+  - name: markupsafe
+    version: ">=2.1.0,<3.0.0"
+    source: pypi.org
+
+  - name: itsdangerous
+    version: ">=2.1.0,<3.0.0"
+    source: pypi.org
+
+  - name: click
+    version: ">=8.1.0,<9.0.0"
+    source: pypi.org
+
+  - name: blinker
+    version: ">=1.7.0,<2.0.0"
+    source: pypi.org
+
+  - name: requests
+    version: ">=2.31.0,<3.0.0"
+    source: pypi.org
+
+  - name: urllib3
+    version: ">=2.0.0,<3.0.0"
+    source: pypi.org
+
+  - name: certifi
+    version: ">=2024.0.0"
+    source: pypi.org
+
+  - name: charset-normalizer
+    version: ">=3.0.0,<4.0.0"
+    source: pypi.org
+
+  - name: idna
+    version: ">=3.6,<4.0"
+    source: pypi.org
+
+  - name: gunicorn
+    version: ">=22.0.0,<23.0.0"
+    source: pypi.org
+
+  - name: packaging
+    version: ">=24.0"
+    source: pypi.org
+
+blocked_packages:
+  - name: reqeusts
+    reason: "typosquatting of 'requests'"
+
+  - name: python-requests
+    reason: "typosquatting of 'requests'"
+
+  - name: request
+    reason: "typosquatting of 'requests'"
+
+  - name: flassk
+    reason: "typosquatting of 'flask'"
+
+  - name: jinja3
+    reason: "typosquatting of 'jinja2'"

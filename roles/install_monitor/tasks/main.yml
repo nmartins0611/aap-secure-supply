@@ -1,0 +1,149 @@
+---
+- name: Ensure monitoring reports directory exists
+  ansible.builtin.file:
+    path: "{{ reports_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Copy lockfile to a temporary location accessible by podman
+  ansible.builtin.copy:
+    src: "{{ monitor_lockfile_path }}"
+    dest: "/tmp/monitor-requirements.lock"
+    mode: "0644"
+    remote_src: true
+
+- name: Copy audit rules to temporary location
+  ansible.builtin.template:
+    src: audit-rules.j2
+    dest: "/tmp/build-monitor-audit.rules"
+    mode: "0644"
+
+- name: Copy audit log parser to temporary location
+  ansible.builtin.copy:
+    src: parse-audit-log.py
+    dest: "/tmp/parse-audit-log.py"
+    mode: "0755"
+
+- name: Start disposable install-monitor container
+  containers.podman.podman_container:
+    name: "{{ monitor_container_name }}"
+    image: "{{ monitor_base_image }}"
+    state: started
+    command: "sleep 600"
+    volumes:
+      - "/tmp/monitor-requirements.lock:{{ monitor_build_dir }}/requirements.lock:ro,Z"
+      - "/tmp/build-monitor-audit.rules:{{ monitor_audit_rules_dest }}:ro,Z"
+      - "/tmp/parse-audit-log.py:{{ monitor_build_dir }}/parse-audit-log.py:ro,Z"
+    cap_add:
+      - AUDIT_CONTROL
+      - AUDIT_WRITE
+    security_opt:
+      - "seccomp=unconfined"
+
+- name: Install audit and python3 inside disposable container
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      microdnf install -y audit python3.12 python3.12-pip
+  changed_when: true
+
+- name: Start auditd inside container
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      bash -c "auditd && auditctl -R {{ monitor_audit_rules_dest }}"
+  changed_when: true
+
+- name: Create virtual environment inside container
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      python3.12 -m venv {{ monitor_venv_dir }}
+  changed_when: true
+
+- name: Run pip install inside monitored container
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      bash -c "{{ monitor_venv_dir }}/bin/pip install
+      --no-cache-dir
+      --index-url {{ monitor_pip_index_url }}
+      -r {{ monitor_build_dir }}/requirements.lock"
+  register: _pip_install
+  failed_when: false
+  changed_when: true
+
+- name: Wait for audit events to flush
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      bash -c "sync && sleep 2 && auditctl -e 0 2>/dev/null; true"
+  changed_when: false
+
+- name: Extract audit log from container
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      cat {{ monitor_audit_log }}
+  register: _audit_log_raw
+  changed_when: false
+
+- name: Parse audit log for violations
+  ansible.builtin.command:
+    cmd: >-
+      podman exec {{ monitor_container_name }}
+      python3.12 {{ monitor_build_dir }}/parse-audit-log.py
+  args:
+    stdin: "{{ _audit_log_raw.stdout }}"
+  register: _violation_report
+  failed_when: false
+  changed_when: false
+
+- name: Save violation report
+  ansible.builtin.copy:
+    content: "{{ _violation_report.stdout }}"
+    dest: "{{ reports_dir }}/install-monitor-{{ build_id | default('latest') }}.json"
+    mode: "0640"
+  when: _violation_report.stdout | default('') | length > 0
+
+- name: Parse violation count
+  ansible.builtin.set_fact:
+    _violations: "{{ (_violation_report.stdout | default('{}') | from_json) }}"
+
+- name: Report violations found
+  ansible.builtin.debug:
+    msg: >-
+      BEHAVIORAL MONITORING REPORT:
+      Total violations: {{ _violations.total_violations | default(0) }}
+      Categories: {{ _violations.categories | default({}) }}
+  when: (_violations.total_violations | default(0) | int) > 0
+
+- name: Fail build on behavioral violations
+  ansible.builtin.fail:
+    msg: >-
+      BUILD BLOCKED -- behavioral monitoring detected {{ _violations.total_violations }}
+      violation(s) during pip install:
+      {{ _violations.categories | default({}) | dict2items
+         | map('join', ': ') | join(', ') }}.
+      Full report: {{ reports_dir }}/install-monitor-{{ build_id | default('latest') }}.json
+  when: (_violations.total_violations | default(0) | int) > 0
+
+- name: Behavioral monitoring passed
+  ansible.builtin.debug:
+    msg: >-
+      Behavioral monitoring PASSED: pip install completed with zero violations.
+      No secret reads, no unexpected writes, no rogue binaries, no network exfiltration.
+
+- name: Export monitoring results
+  ansible.builtin.set_stats:
+    data:
+      install_monitor_passed: true
+      install_monitor_violation_count: 0
+
+- name: Destroy disposable container
+  containers.podman.podman_container:
+    name: "{{ monitor_container_name }}"
+    state: absent
+  when: true
+  tags:
+    - always

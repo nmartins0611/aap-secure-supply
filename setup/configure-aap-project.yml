@@ -1,0 +1,137 @@
+---
+# configure-aap-project.yml — Register project and EE on AAP 2.6
+#
+# Creates:
+#   1. Execution environment (trusted-pipeline-ee)
+#   2. SCM project pointing at this repository
+#   3. Inventory with the RHEL target host
+#
+# Usage:
+#   ansible-playbook setup/configure-aap-project.yml \
+#     -e @setup/vars/deploy-vars.yml \
+#     -e project_scm_url=https://github.com/your-org/aap-full-trusted-pipeline.git
+
+- name: "Configure AAP 2.6 — Project, EE, and Inventory"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars/deploy-vars.yml
+
+  module_defaults:
+    group/ansible.controller.controller:
+      controller_host: "{{ aap_controller_url }}"
+      controller_username: "{{ aap_admin_user }}"
+      controller_password: "{{ aap_admin_password }}"
+      validate_certs: "{{ aap_verify_ssl }}"
+
+  tasks:
+    - name: Verify AAP Controller is reachable
+      ansible.builtin.uri:
+        url: "{{ aap_controller_url }}/api/controller/v2/ping/"
+        method: GET
+        validate_certs: "{{ aap_verify_ssl }}"
+        status_code: 200
+      register: _aap_ping
+      tags: [always]
+
+    - name: Display AAP version
+      ansible.builtin.debug:
+        msg: "AAP Controller {{ _aap_ping.json.version }} detected"
+      tags: [always]
+
+    - name: Require project_scm_url
+      ansible.builtin.assert:
+        that:
+          - project_scm_url | length > 0
+        fail_msg: >-
+          Pass a non-empty project_scm_url, for example:
+          -e project_scm_url=https://github.com/your-org/aap-full-trusted-pipeline.git
+      tags: [project]
+
+    # ── Execution Environment ──
+
+    - name: Create execution environment
+      ansible.controller.execution_environment:
+        name: "{{ aap_ee_name }}"
+        description: "Supply chain pipeline EE — syft, grype, cosign, skopeo, nftables, auditd, pip-audit"
+        image: "{{ ee_image }}"
+        pull: missing
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [ee]
+
+    # ── Project ──
+
+    - name: Create SCM project
+      ansible.controller.project:
+        name: "{{ aap_project_name }}"
+        description: "AAP Full Trusted Build Pipeline — supply chain security automation"
+        organization: "{{ aap_organization }}"
+        scm_type: git
+        scm_url: "{{ project_scm_url }}"
+        scm_branch: "{{ project_scm_branch }}"
+        scm_clean: true
+        scm_update_on_launch: true
+        default_environment: "{{ aap_ee_name }}"
+        credential: "{{ project_scm_credential_name }}"
+        state: present
+      tags: [project]
+
+    - name: Wait for initial project sync
+      ansible.controller.project:
+        name: "{{ aap_project_name }}"
+        organization: "{{ aap_organization }}"
+        wait: true
+        timeout: 300
+        state: present
+      tags: [project]
+
+    # ── Inventory ──
+
+    - name: Create pipeline inventory
+      ansible.controller.inventory:
+        name: "{{ aap_inventory_name }}"
+        description: "Build hosts and deploy targets for the trusted pipeline"
+        organization: "{{ aap_organization }}"
+        state: present
+      tags: [inventory]
+
+    - name: Add RHEL target host to inventory
+      ansible.controller.host:
+        name: "rhel-target"
+        inventory: "{{ aap_inventory_name }}"
+        variables:
+          ansible_host: "{{ target_host }}"
+          ansible_user: "{{ target_user }}"
+          ansible_become: true
+        state: present
+      tags: [inventory]
+
+    - name: Create build_hosts group
+      ansible.controller.group:
+        name: "build_hosts"
+        inventory: "{{ aap_inventory_name }}"
+        hosts:
+          - "rhel-target"
+        state: present
+      tags: [inventory]
+
+    - name: Create deploy_targets group
+      ansible.controller.group:
+        name: "deploy_targets"
+        inventory: "{{ aap_inventory_name }}"
+        hosts:
+          - "rhel-target"
+        state: present
+      tags: [inventory]
+
+    - name: Display configuration summary
+      ansible.builtin.debug:
+        msg:
+          - "EE: {{ aap_ee_name }} ({{ ee_image }})"
+          - "Project: {{ aap_project_name }} ({{ project_scm_url }})"
+          - "Inventory: {{ aap_inventory_name }}"
+          - "Target host: {{ target_host }}"
+      tags: [always]

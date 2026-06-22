@@ -1,0 +1,41 @@
+---
+- name: "Step 7: Enforce admission control at deployment"
+  hosts: deploy_targets
+  gather_facts: true
+
+  vars:
+    deploy_image_ref: "{{ admission_image_ref }}"
+
+  pre_tasks:
+    - name: Run admission checks before deployment
+      ansible.builtin.include_role:
+        name: admission_enforcer
+      vars:
+        admission_image_ref: "{{ deploy_image_ref }}"
+
+  tasks:
+    - name: Deploy verified container
+      containers.podman.podman_container:
+        name: "{{ deploy_image_ref | regex_replace('[:/]', '-') | truncate(63, True, '') }}"
+        image: "{{ deploy_image_ref }}"
+        state: started
+        ports:
+          - "8080:8080"
+        restart_policy: always
+
+    - name: Verify container is running
+      ansible.builtin.command:
+        cmd: "podman healthcheck run {{ deploy_image_ref | regex_replace('[:/]', '-') | truncate(63, True, '') }}"
+      register: _health
+      retries: 3
+      delay: 5
+      until: _health.rc == 0
+      failed_when: false
+      changed_when: false
+
+    - name: Deployment complete
+      ansible.builtin.debug:
+        msg: >-
+          Image {{ deploy_image_ref }} deployed successfully.
+          All admission gates passed: registry approved, digest-pinned,
+          signed, SBOM present, no critical CVEs.

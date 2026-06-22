@@ -1,0 +1,152 @@
+---
+# Master orchestrator for the trusted build pipeline (Steps 1-5).
+#
+# In AAP, this maps to a Workflow Template with individual job templates
+# for each step. This playbook provides a single-file runnable version
+# for testing and local development.
+#
+# AAP Workflow structure:
+#
+#   [Step 1: Validate Lockfile]
+#       │ success
+#       ▼
+#   [Step 3a: Apply Network Isolation]
+#       │ success
+#       ▼
+#   [Step 4: Behavioral Monitor]
+#       │ success
+#       ▼
+#   [Step 5: Post-Install Verify]
+#       │ success
+#       ▼
+#   [Step 3b: Revert Network Isolation]
+#       │ success
+#       ▼
+#   [Step 6: Golden Image Build]
+#       │
+#       ├─ failure at any step ──► [Failure Report] + [Step 3b: Revert Isolation]
+#       │
+#       ▼ success
+#   Pipeline complete ─── image signed, SBOM attached, provenance recorded
+#
+# Step 2 (mirror intake) runs separately via EDA trigger, not inside this workflow.
+
+- name: "Trusted Build Pipeline -- Steps 1 through 6"
+  hosts: build_hosts
+  gather_facts: true
+
+  tasks:
+    # ── Step 1: Lockfile Validation ──
+
+    - name: "Step 1: Validate lockfile"
+      block:
+        - name: Run lockfile validation
+          ansible.builtin.include_role:
+            name: lockfile_validator
+      rescue:
+        - name: Record Step 1 failure
+          ansible.builtin.set_fact:
+            _pipeline_failed: true
+            _pipeline_failed_step: "Step 1: Lockfile Validation"
+            _pipeline_failure_msg: "{{ ansible_failed_result.msg | default('Lockfile validation failed') }}"
+
+    - name: Abort on Step 1 failure
+      ansible.builtin.fail:
+        msg: "{{ _pipeline_failure_msg }}"
+      when: _pipeline_failed | default(false)
+
+    # ── Steps 3-5: Network Isolation + Monitored Install + Verification ──
+    # Wrapped in block/always so network isolation is always reverted.
+
+    - name: "Steps 3-5: Isolated build with behavioral monitoring"
+      block:
+        - name: "Step 3a: Apply network isolation"
+          ansible.builtin.include_role:
+            name: build_network_isolation
+          vars:
+            network_isolation_action: "apply"
+
+        - name: "Step 4: Behavioral monitoring of pip install"
+          ansible.builtin.include_role:
+            name: install_monitor
+
+        - name: "Step 5: Post-install file verification"
+          ansible.builtin.include_role:
+            name: post_install_verifier
+
+      always:
+        - name: "Step 3b: Revert network isolation (always runs)"
+          ansible.builtin.include_role:
+            name: build_network_isolation
+          vars:
+            network_isolation_action: "revert"
+
+        - name: Destroy disposable monitor container (always runs)
+          containers.podman.podman_container:
+            name: "{{ monitor_container_name }}"
+            state: absent
+          failed_when: false
+
+    # ── Step 6: Build, scan, sign ──
+
+    - name: "Step 6: Build and sign application image"
+      block:
+        - name: Build application container image
+          containers.podman.podman_image:
+            name: "{{ image_name }}"
+            tag: "{{ candidate_tag }}"
+            path: "{{ build_context }}"
+            build:
+              file: Containerfile
+              rm: true
+              no_cache: true
+            state: build
+
+        - name: Push candidate to registry
+          containers.podman.podman_image:
+            name: "{{ image_name }}"
+            tag: "{{ candidate_tag }}"
+            push: true
+
+        - name: Generate SBOM
+          ansible.builtin.command:
+            cmd: "syft registry:{{ image_name }}:{{ candidate_tag }} -o cyclonedx-json=/tmp/app-sbom.json"
+          changed_when: true
+
+        - name: Scan SBOM for critical CVEs
+          ansible.builtin.command:
+            cmd: "grype sbom:/tmp/app-sbom.json --fail-on critical"
+
+        - name: Promote to production tag
+          ansible.builtin.command:
+            cmd: >-
+              skopeo copy
+              docker://{{ image_name }}:{{ candidate_tag }}
+              docker://{{ image_name }}:{{ production_tag }}
+          changed_when: true
+
+        - name: Sign production image
+          ansible.builtin.command:
+            cmd: "cosign sign --yes {{ image_name }}:{{ production_tag }}"
+          changed_when: true
+
+        - name: Attach SBOM attestation
+          ansible.builtin.command:
+            cmd: "cosign attach sbom --sbom /tmp/app-sbom.json {{ image_name }}:{{ production_tag }}"
+          changed_when: true
+
+    - name: Pipeline complete
+      ansible.builtin.debug:
+        msg: >-
+          TRUSTED BUILD PIPELINE COMPLETE.
+          Image: {{ image_name }}:{{ production_tag }}
+          All gates passed: lockfile validated, network isolated during build,
+          install behavior monitored (zero violations), post-install files verified,
+          SBOM generated, CVE scan clean, image signed, SBOM attached.
+
+    - name: Export pipeline results
+      ansible.builtin.set_stats:
+        data:
+          pipeline_status: "success"
+          pipeline_image: "{{ image_name }}:{{ production_tag }}"
+          pipeline_build_id: "{{ build_id }}"

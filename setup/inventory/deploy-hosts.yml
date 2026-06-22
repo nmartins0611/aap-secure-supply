@@ -1,0 +1,9 @@
+---
+all:
+  children:
+    target_hosts:
+      hosts:
+        rhel-target:
+          ansible_host: "{{ target_host | default('rhel-target.example.com') }}"
+          ansible_user: "{{ target_user | default('ansible') }}"
+          ansible_become: true

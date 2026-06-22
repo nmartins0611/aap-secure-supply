@@ -1,0 +1,80 @@
+---
+# deploy-all.yml — Master deployment playbook
+#
+# Runs every setup play in the correct order to fully provision the
+# trusted build pipeline demo from scratch.
+#
+# Prerequisites:
+#   1. Edit setup/vars/deploy-vars.yml with your environment details
+#   2. Set environment variables for secrets:
+#        export AAP_ADMIN_PASSWORD="..."
+#        export QUAY_ROBOT_TOKEN="..."
+#        export SCM_TOKEN="..."          # optional
+#        export SLACK_WEBHOOK_URL="..."   # optional
+#        export EDA_ADMIN_PASSWORD="..."  # optional, defaults to AAP password
+#
+# Usage:
+#   ansible-playbook setup/deploy-all.yml \
+#     -i setup/inventory/deploy-hosts.yml \
+#     -e @setup/vars/deploy-vars.yml \
+#     -e project_scm_url=https://github.com/your-org/aap-full-trusted-pipeline.git
+
+# ── Phase 1: Infrastructure ──
+
+- name: "[Phase 1/4] Prepare RHEL target host"
+  ansible.builtin.import_playbook: deploy-target-host.yml
+
+# ── Phase 2: AAP Foundation (EE, Project, Inventory) ──
+
+- name: "[Phase 2/4] Configure AAP — Credentials"
+  ansible.builtin.import_playbook: configure-aap-credentials.yml
+
+- name: "[Phase 2/4] Configure AAP — Project, EE, Inventory"
+  ansible.builtin.import_playbook: configure-aap-project.yml
+
+# ── Phase 3: AAP Automation Objects ──
+
+- name: "[Phase 3/4] Configure AAP — Job Templates and Workflow"
+  ansible.builtin.import_playbook: configure-aap-templates.yml
+
+# ── Phase 4: Event-Driven Ansible ──
+
+- name: "[Phase 4/4] Configure EDA — Project and Rulebook Activations"
+  ansible.builtin.import_playbook: configure-aap-eda.yml
+
+# ── Deployment complete ──
+
+- name: "Deployment Summary"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars/deploy-vars.yml
+
+  tasks:
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════"
+          - "  Trusted Build Pipeline — Deployment Complete"
+          - "═══════════════════════════════════════════════════════"
+          - ""
+          - "  AAP Controller:  {{ aap_controller_url }}"
+          - "  RHEL Target:     {{ target_host }}"
+          - "  Quay.io:         {{ quay_registry_url }}/{{ quay_namespace }}"
+          - ""
+          - "  Components deployed:"
+          - "    ✓ Podman socket on RHEL target"
+          - "    ✓ OPA admission controller (:{{ opa_port }})"
+          - "    ✓ Sample Flask app (:{{ sample_app_port }})"
+          - "    ✓ AAP Project, EE, Inventory"
+          - "    ✓ AAP Credentials (Machine, Registry, SCM)"
+          - "    ✓ 9 Job Templates + Workflow Template"
+          - "    ✓ 2 EDA Rulebook Activations"
+          - ""
+          - "  Next steps:"
+          - "    1. Push this repo to {{ project_scm_url | default('your Git remote') }}"
+          - "    2. Launch 'Trusted Build Pipeline' workflow from the AAP UI"
+          - "    3. Or run individual steps with the per-step job templates"
+          - "═══════════════════════════════════════════════════════"

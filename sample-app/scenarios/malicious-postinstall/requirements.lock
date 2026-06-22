@@ -1,0 +1,15 @@
+#
+# Malicious postinstall scenario -- includes a local package (evil-package) whose
+# setup.py runs a postinstall script that reads /etc/shadow and attempts an
+# outbound HTTP connection. The package itself is legitimate-looking.
+#
+# Expected result: PASS Step 1 (if evil-package is added to allowlist for demo),
+# but FAIL at Step 4 (behavioral monitoring catches secret reads and network exfil).
+#
+flask==3.1.0 \
+    --hash=sha256:5f873c5184c897c8d9d1b05df1e3d01b14910ce69607a117bd3277098a5c8e3 \
+    --hash=sha256:77fd4e1249d8c9923de34907236b747ced06e5467ecac1a7bb7115ae0e796b42
+gunicorn==22.0.0 \
+    --hash=sha256:350679f91b24062c86e386e198a15438d53a7a8207235a78ba1b53df4c4378d9 \
+    --hash=sha256:4a0b436239ff76fb33f11c07a16482c521a7e09c1ce3cc293c2330afe01bec63
+./scenarios/malicious-postinstall/evil-package

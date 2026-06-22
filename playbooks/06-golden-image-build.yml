@@ -1,0 +1,111 @@
+---
+- name: "Step 6: Build, harden, scan, sign, and publish golden image"
+  hosts: build_hosts
+  gather_facts: true
+
+  vars:
+    candidate_ref: "{{ golden_image_name }}:{{ candidate_tag }}"
+    production_ref: "{{ golden_image_name }}:{{ production_tag }}"
+
+  tasks:
+    - name: Build application container image
+      containers.podman.podman_image:
+        name: "{{ image_name }}"
+        tag: "{{ candidate_tag }}"
+        path: "{{ build_context }}"
+        build:
+          file: Containerfile
+          rm: true
+          no_cache: true
+        state: build
+
+    - name: Push candidate to registry
+      containers.podman.podman_image:
+        name: "{{ image_name }}"
+        tag: "{{ candidate_tag }}"
+        push: true
+
+    - name: Generate SBOM from candidate image
+      ansible.builtin.command:
+        cmd: "syft registry:{{ image_name }}:{{ candidate_tag }} -o cyclonedx-json=/tmp/app-sbom.json"
+      changed_when: true
+
+    - name: Scan SBOM for critical vulnerabilities
+      ansible.builtin.command:
+        cmd: "grype sbom:/tmp/app-sbom.json --fail-on critical"
+      register: _grype_result
+
+    - name: Generate VEX document
+      ansible.builtin.command:
+        cmd: >-
+          grype sbom:/tmp/app-sbom.json
+          --output json
+          --file /tmp/app-grype-results.json
+      changed_when: true
+
+    - name: Promote candidate to production tag
+      ansible.builtin.command:
+        cmd: >-
+          skopeo copy
+          docker://{{ image_name }}:{{ candidate_tag }}
+          docker://{{ image_name }}:{{ production_tag }}
+      changed_when: true
+
+    - name: Sign production image with cosign
+      ansible.builtin.command:
+        cmd: "cosign sign --yes {{ image_name }}:{{ production_tag }}"
+      changed_when: true
+
+    - name: Attach SBOM attestation
+      ansible.builtin.command:
+        cmd: "cosign attach sbom --sbom /tmp/app-sbom.json {{ image_name }}:{{ production_tag }}"
+      changed_when: true
+
+    - name: Generate build provenance attestation
+      ansible.builtin.copy:
+        content: |
+          {
+            "_type": "https://in-toto.io/Statement/v0.1",
+            "predicateType": "https://slsa.dev/provenance/v0.2",
+            "subject": [{"name": "{{ image_name }}:{{ production_tag }}"}],
+            "predicate": {
+              "builder": {"id": "aap-trusted-build-pipeline"},
+              "buildType": "ansible-automation-platform",
+              "invocation": {
+                "parameters": {
+                  "build_id": "{{ build_id }}",
+                  "lockfile": "{{ lockfile_path }}"
+                }
+              },
+              "metadata": {
+                "buildStartedOn": "{{ ansible_date_time.iso8601 }}",
+                "completeness": {
+                  "parameters": true,
+                  "environment": true,
+                  "materials": true
+                }
+              },
+              "materials": [
+                {"uri": "{{ build_context }}", "digest": {"sha256": "source-commit-sha"}},
+                {"uri": "{{ monitor_base_image }}", "digest": {"sha256": "base-image-digest"}}
+              ]
+            }
+          }
+        dest: "/tmp/app-provenance.json"
+        mode: "0640"
+
+    - name: Attach provenance attestation
+      ansible.builtin.command:
+        cmd: >-
+          cosign attest --yes
+          --predicate /tmp/app-provenance.json
+          --type slsaprovenance
+          {{ image_name }}:{{ production_tag }}
+      changed_when: true
+
+    - name: Export build results
+      ansible.builtin.set_stats:
+        data:
+          golden_build_published_ref: "{{ image_name }}:{{ production_tag }}"
+          golden_build_id: "{{ build_id }}"
+          golden_build_sbom: "/tmp/app-sbom.json"

@@ -1,0 +1,39 @@
+---
+# Network allowlist for build-time firewall isolation (Step 3).
+# Only these destinations are reachable during the build.
+# Everything else is dropped and logged.
+
+allowed_hosts:
+  - description: "Internal PyPI mirror"
+    ip: "10.0.1.50"
+    port: 443
+    protocol: tcp
+
+  - description: "Internal container registry (Quay)"
+    ip: "10.0.1.51"
+    port: 443
+    protocol: tcp
+
+  - description: "Quay.io public registry"
+    ip: "quay.io"
+    port: 443
+    protocol: tcp
+
+  - description: "Red Hat registry"
+    ip: "registry.redhat.io"
+    port: 443
+    protocol: tcp
+
+  - description: "Internal DNS"
+    ip: "10.0.0.2"
+    port: 53
+    protocol: udp
+
+  - description: "Internal DNS (TCP fallback)"
+    ip: "10.0.0.2"
+    port: 53
+    protocol: tcp
+
+# IPs resolved at apply-time for hostname entries above.
+# The nftables template resolves hostnames to IPs before applying rules,
+# so builds are not dependent on DNS after isolation is active.

@@ -1,0 +1,28 @@
+# Audit rules for supply chain behavioral monitoring.
+# Deployed inside the disposable install container.
+# Managed by: aap-full-trusted-pipeline / install_monitor role
+
+# Delete all existing rules
+-D
+
+# Set buffer size
+-b 8192
+
+# Monitor reads of sensitive credential files
+{% for path in monitor_secret_paths %}
+-w {{ path }} -p r -k secret_read
+{% endfor %}
+
+# Monitor writes outside the expected virtual environment
+-a always,exit -F arch=b64 -S openat -S open -F a1&0x01 -F dir!={{ monitor_venv_dir }} -F dir!=/tmp/pip -F dir!=/root/.cache -k unexpected_write
+
+# Monitor execution of new binaries (anything executed that was written during this session)
+-a always,exit -F arch=b64 -S execve -F dir=/tmp -k rogue_exec
+-a always,exit -F arch=b64 -S execve -F dir=/var/tmp -k rogue_exec
+-a always,exit -F arch=b64 -S execve -F dir=/dev/shm -k rogue_exec
+
+# Monitor outbound network connections (connect syscall)
+-a always,exit -F arch=b64 -S connect -F a0!=1 -k network_connect
+
+# Monitor DNS resolution
+-a always,exit -F arch=b64 -S connect -F a2=16 -k dns_lookup

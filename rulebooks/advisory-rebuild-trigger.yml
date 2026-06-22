@@ -1,0 +1,32 @@
+---
+- name: Trigger rebuild on Red Hat security advisory
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+    - name: Critical or Important RHSA affecting UBI 9
+      condition: >-
+        event.payload.advisory_type == "RHSA" and
+        event.payload.severity in ["Critical", "Important"] and
+        event.payload.affected_products is search("ubi9|rhel-9", ignorecase=true)
+      actions:
+        - run_job_template:
+            name: "Trusted Pipeline - Full Build"
+            organization: "Default"
+            job_args:
+              extra_vars:
+                rebuild_reason: "RHSA advisory: {{ event.payload.advisory_id }}"
+                advisory_severity: "{{ event.payload.severity }}"
+                advisory_cves: "{{ event.payload.cves | default([]) | join(', ') }}"
+
+    - name: Log all received advisories
+      condition: event.payload.advisory_type is defined
+      actions:
+        - debug:
+            msg: >-
+              Advisory received: {{ event.payload.advisory_id | default('unknown') }}
+              Type: {{ event.payload.advisory_type }}
+              Severity: {{ event.payload.severity | default('unknown') }}

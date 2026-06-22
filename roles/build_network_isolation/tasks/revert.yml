@@ -1,0 +1,30 @@
+---
+- name: Remove build isolation nftables table
+  ansible.builtin.command:
+    cmd: "nft delete table inet {{ nftables_table_name }}"
+  changed_when: true
+  failed_when: false
+
+- name: Verify isolation table removed
+  ansible.builtin.command:
+    cmd: "nft list table inet {{ nftables_table_name }}"
+  register: _verify_removed
+  changed_when: false
+  failed_when: false
+
+- name: Confirm isolation is reverted
+  ansible.builtin.assert:
+    that:
+      - _verify_removed.rc != 0
+    fail_msg: "Failed to remove build isolation nftables table"
+    success_msg: "Build network isolation REVERTED -- all outbound traffic restored."
+
+- name: Clean up ruleset file
+  ansible.builtin.file:
+    path: "/etc/nftables/build-isolation.nft"
+    state: absent
+
+- name: Clean up backup file
+  ansible.builtin.file:
+    path: "{{ nftables_state_backup }}"
+    state: absent

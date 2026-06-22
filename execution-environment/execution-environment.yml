@@ -1,0 +1,41 @@
+---
+version: 3
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-26/ee-supported-rhel9:latest
+
+dependencies:
+  galaxy:
+    collections:
+      - containers.podman
+      - community.general
+      - ansible.posix
+
+  python:
+    - pip-audit>=2.7.0
+    - pip-tools>=7.4.0
+
+additional_build_steps:
+  prepend_final:
+    # syft -- SBOM generation
+    - RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin v1.45.1
+
+    # grype -- vulnerability scanning
+    - RUN curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.114.0
+
+    # cosign -- image signing and attestation
+    - >-
+      RUN curl -sSfL
+      https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+      -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+
+    # OS packages: skopeo, nftables, audit tools, OpenSCAP
+    - >-
+      RUN dnf install -y
+      skopeo
+      nftables
+      audit
+      openscap-utils
+      scap-security-guide
+      jq
+      && dnf clean all

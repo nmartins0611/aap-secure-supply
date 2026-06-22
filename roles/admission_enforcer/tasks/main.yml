@@ -1,0 +1,117 @@
+---
+- name: Validate image reference is provided
+  ansible.builtin.assert:
+    that:
+      - admission_image_ref | length > 0
+    fail_msg: "admission_image_ref is required"
+
+- name: Extract registry from image reference
+  ansible.builtin.set_fact:
+    _image_registry: "{{ admission_image_ref.split('/')[0] }}"
+
+- name: Check registry is approved
+  ansible.builtin.fail:
+    msg: >-
+      ADMISSION DENIED -- image '{{ admission_image_ref }}' is from unapproved
+      registry '{{ _image_registry }}'. Approved: {{ admission_approved_registries | join(', ') }}
+  when: _image_registry not in admission_approved_registries
+
+- name: Check image uses digest reference
+  ansible.builtin.fail:
+    msg: >-
+      ADMISSION DENIED -- image '{{ admission_image_ref }}' uses a mutable tag.
+      Digest reference (@sha256:...) is required for production deployment.
+  when: "'@sha256:' not in admission_image_ref"
+
+- name: Verify image signature with cosign
+  ansible.builtin.command:
+    cmd: "cosign verify --output text {{ admission_image_ref }}"
+  register: _cosign_verify
+  failed_when: false
+  changed_when: false
+
+- name: Block unsigned images
+  ansible.builtin.fail:
+    msg: >-
+      ADMISSION DENIED -- image '{{ admission_image_ref }}' has no valid cosign
+      signature. Only signed images may be deployed. cosign output:
+      {{ _cosign_verify.stderr | default('no output') }}
+  when: _cosign_verify.rc != 0
+
+- name: Check for SBOM attestation
+  ansible.builtin.command:
+    cmd: "cosign verify-attestation --type cyclonedx {{ admission_image_ref }}"
+  register: _sbom_check
+  failed_when: false
+  changed_when: false
+
+- name: Block images without SBOM
+  ansible.builtin.fail:
+    msg: >-
+      ADMISSION DENIED -- image '{{ admission_image_ref }}' has no SBOM
+      attestation. SBOM is required for production deployment.
+  when: _sbom_check.rc != 0
+
+- name: Download and scan SBOM for critical CVEs
+  ansible.builtin.command:
+    cmd: "cosign download sbom {{ admission_image_ref }}"
+  register: _sbom_download
+  changed_when: false
+
+- name: Save SBOM for grype scan
+  ansible.builtin.copy:
+    content: "{{ _sbom_download.stdout }}"
+    dest: "/tmp/admission-sbom.json"
+    mode: "0640"
+
+- name: Scan SBOM for critical vulnerabilities
+  ansible.builtin.command:
+    cmd: "grype sbom:/tmp/admission-sbom.json --fail-on critical --output json"
+  register: _grype_scan
+  failed_when: false
+  changed_when: false
+
+- name: Block images with critical CVEs
+  ansible.builtin.fail:
+    msg: >-
+      ADMISSION DENIED -- image '{{ admission_image_ref }}' has critical
+      vulnerabilities. Remediate before deployment.
+  when: _grype_scan.rc != 0
+
+- name: Inspect base image layer
+  ansible.builtin.command:
+    cmd: "skopeo inspect --raw docker://{{ admission_image_ref }}"
+  register: _image_manifest
+  changed_when: false
+
+- name: Log successful admission to Splunk
+  ansible.builtin.uri:
+    url: "{{ admission_splunk_hec_url }}"
+    method: POST
+    headers:
+      Authorization: "Splunk {{ admission_splunk_hec_token }}"
+    body_format: json
+    body:
+      event:
+        action: "admit"
+        image: "{{ admission_image_ref }}"
+        signature_verified: true
+        sbom_present: true
+        critical_cves: 0
+    status_code: [200, 201]
+  when:
+    - admission_splunk_hec_url | length > 0
+    - admission_splunk_hec_token | length > 0
+  failed_when: false
+
+- name: Admission control passed
+  ansible.builtin.debug:
+    msg: >-
+      ADMISSION APPROVED -- image '{{ admission_image_ref }}' passed all gates:
+      approved registry, digest-pinned, signed, SBOM attached, no critical CVEs.
+
+- name: Export admission results
+  ansible.builtin.set_stats:
+    data:
+      admission_approved: true
+      admission_image: "{{ admission_image_ref }}"

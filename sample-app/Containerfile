@@ -1,0 +1,24 @@
+FROM registry.redhat.io/ubi9/ubi-minimal:9.4
+
+LABEL org.opencontainers.image.title="trusted-pipeline-demo-app"
+LABEL org.opencontainers.image.description="Sample app built through the AAP trusted build pipeline"
+LABEL io.trusted-pipeline.build-method="aap-trusted-build-pipeline"
+
+RUN microdnf install -y python3.12 python3.12-pip && microdnf clean all
+
+WORKDIR /app
+
+COPY requirements.lock ./
+RUN python3.12 -m pip install \
+    --no-cache-dir \
+    --require-hashes \
+    --only-binary=:all: \
+    -r requirements.lock
+
+COPY app.py ./
+
+RUN useradd -r -u 1001 -g 0 -s /sbin/nologin appuser
+USER 1001
+
+EXPOSE 8080
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
